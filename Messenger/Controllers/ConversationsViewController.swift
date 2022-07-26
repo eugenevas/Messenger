@@ -12,7 +12,7 @@ class ConversationsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemPurple
+//        view.backgroundColor = .systemPurple
         
         //Navigations buttons color
 //        UINavigationBar.appearance().tintColor = .systemGreen
