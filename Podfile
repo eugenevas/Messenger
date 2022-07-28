@@ -7,9 +7,13 @@ target 'Messenger' do
 # Firebase
 pod 'Firebase/Core'
 pod 'Firebase/Auth'
-pod 'Firebase/Database'
+pod 'Firebase/Database', '7.0.0'
 
 # Facebook 
 pod 'FBSDKLoginKit'
+
+# Google Sign In
+pod 'GoogleSignIn', '5.0.0'
+
 
 end

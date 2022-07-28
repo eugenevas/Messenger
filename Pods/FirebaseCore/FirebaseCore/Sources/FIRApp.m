@@ -30,12 +30,11 @@
 #import "FirebaseCore/Sources/FIRConfigurationInternal.h"
 #import "FirebaseCore/Sources/FIRFirebaseUserAgent.h"
 
-#import "FirebaseCore/Extension/FIRAppInternal.h"
-#import "FirebaseCore/Extension/FIRCoreDiagnosticsConnector.h"
-#import "FirebaseCore/Extension/FIRHeartbeatLogger.h"
-#import "FirebaseCore/Extension/FIRLibrary.h"
-#import "FirebaseCore/Extension/FIRLogger.h"
-#import "FirebaseCore/Extension/FIROptionsInternal.h"
+#import "FirebaseCore/Sources/Private/FIRAppInternal.h"
+#import "FirebaseCore/Sources/Private/FIRCoreDiagnosticsConnector.h"
+#import "FirebaseCore/Sources/Private/FIRLibrary.h"
+#import "FirebaseCore/Sources/Private/FIRLogger.h"
+#import "FirebaseCore/Sources/Private/FIROptionsInternal.h"
 #import "FirebaseCore/Sources/Public/FirebaseCore/FIRVersion.h"
 
 #import <GoogleUtilities/GULAppEnvironmentUtil.h>
@@ -74,6 +73,8 @@ NSString *const kFIRGlobalAppDataCollectionEnabledDefaultsKeyFormat =
 NSString *const kFIRGlobalAppDataCollectionEnabledPlistKey =
     @"FirebaseDataCollectionDefaultEnabled";
 
+NSString *const kFIRAppDiagnosticsNotification = @"FIRAppDiagnosticsNotification";
+
 NSString *const kFIRAppDiagnosticsConfigurationTypeKey = @"ConfigType";
 NSString *const kFIRAppDiagnosticsErrorKey = @"Error";
 NSString *const kFIRAppDiagnosticsFIRAppKey = @"FIRApp";
@@ -95,9 +96,6 @@ NSString *const FIRAuthStateDidChangeInternalNotificationUIDKey =
  * Error domain for exceptions and NSError construction.
  */
 NSString *const kFirebaseCoreErrorDomain = @"com.firebase.core";
-
-/** The NSUserDefaults suite name for FirebaseCore, for those storage locations that use it. */
-NSString *const kFirebaseCoreDefaultsSuiteName = @"com.firebase.core";
 
 /**
  * The URL to download plist files.
@@ -130,12 +128,18 @@ static FIRApp *sDefaultApp;
   FIROptions *options = [FIROptions defaultOptions];
   if (!options) {
     [NSException raise:kFirebaseCoreErrorDomain
-                format:@"`FirebaseApp.configure()` could not find "
+                format:@"`[FIRApp configure];` (`FirebaseApp.configure()` in Swift) could not find "
                        @"a valid GoogleService-Info.plist in your project. Please download one "
                        @"from %@.",
                        kPlistURL];
   }
   [FIRApp configureWithOptions:options];
+#if TARGET_OS_OSX || TARGET_OS_TV
+  FIRLogNotice(kFIRLoggerCore, @"I-COR000028",
+               @"tvOS and macOS SDK support is not part of the official Firebase product. "
+               @"Instead they are community supported. Details at "
+               @"https://github.com/firebase/firebase-ios-sdk/blob/master/README.md.");
+#endif
 }
 
 + (void)configureWithOptions:(FIROptions *)options {
@@ -194,12 +198,6 @@ static FIRApp *sDefaultApp;
     FIRLogDebug(kFIRLoggerCore, @"I-COR000002", @"Configuring app named %@", name);
   }
 
-  // Default instantiation, make sure we populate with Swift SDKs that can't register in time.
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    [self registerSwiftComponents];
-  });
-
   @synchronized(self) {
     FIRApp *app = [[FIRApp alloc] initInstanceWithName:name options:options];
     if (app.isDefaultApp) {
@@ -251,11 +249,8 @@ static FIRApp *sDefaultApp;
   }
   FIRLogError(kFIRLoggerCore, @"I-COR000003",
               @"The default Firebase app has not yet been "
-              @"configured. Add `FirebaseApp.configure()` to your "
-              @"application initialization. This can be done in "
-              @"in the App Delegate's application(_:didFinishLaunchingWithOptions:)` "
-              @"(or the `@main` struct's initializer in SwiftUI). "
-              @"Read more: https://goo.gl/ctyzm8.");
+              @"configured. Add `[FIRApp configure];` (`FirebaseApp.configure()` in Swift) to your "
+              @"application initialization. Read more: https://goo.gl/ctyzm8.");
   return nil;
 }
 
@@ -339,7 +334,6 @@ static FIRApp *sDefaultApp;
     _options.editingLocked = YES;
     _isDefaultApp = [name isEqualToString:kFIRDefaultAppName];
     _container = [[FIRComponentContainer alloc] initWithApp:self];
-    _heartbeatLogger = [[FIRHeartbeatLogger alloc] initWithAppID:self.options.googleAppID];
   }
   return self;
 }
@@ -354,6 +348,9 @@ static FIRApp *sDefaultApp;
     return NO;
   }
 
+  [self logCoreTelemetryIfEnabled];
+
+#if TARGET_OS_IOS
   // Initialize the Analytics once there is a valid options under default app. Analytics should
   // always initialize first by itself before the other SDKs.
   if ([self.name isEqualToString:kFIRDefaultAppName]) {
@@ -374,6 +371,7 @@ static FIRApp *sDefaultApp;
       }
     }
   }
+#endif
 
   [self subscribeForAppDidBecomeActiveNotifications];
 
@@ -832,38 +830,6 @@ static FIRApp *sDefaultApp;
   return collectionEnabledPlistObject;
 }
 
-#pragma mark - Swift Components.
-
-+ (void)registerSwiftComponents {
-  SEL componentsToRegisterSEL = @selector(componentsToRegister);
-  // Dictionary of class names that conform to `FIRLibrary` and their user agents. These should only
-  // be SDKs that are written in Swift but still visible to ObjC.
-  NSDictionary<NSString *, NSString *> *swiftComponents = @{
-    @"FIRFunctionsComponent" : @"fire-fun",
-    @"FIRStorageComponent" : @"fire-str",
-  };
-  for (NSString *className in swiftComponents.allKeys) {
-    Class klass = NSClassFromString(className);
-    if (klass && [klass respondsToSelector:componentsToRegisterSEL]) {
-      [FIRApp registerInternalLibrary:klass withName:swiftComponents[className]];
-    }
-  }
-
-  // Swift libraries that don't need component behaviour
-  NSDictionary<NSString *, NSString *> *swiftLibraries = @{
-    @"FIRCombineAuthLibrary" : @"comb-auth",
-    @"FIRCombineFirestoreLibrary" : @"comb-firestore",
-    @"FIRCombineFunctionsLibrary" : @"comb-functions",
-    @"FIRCombineStorageLibrary" : @"comb-storage",
-  };
-  for (NSString *className in swiftLibraries.allKeys) {
-    Class klass = NSClassFromString(className);
-    if (klass) {
-      [FIRApp registerLibrary:swiftLibraries[className] withVersion:FIRFirebaseVersion()];
-    }
-  }
-}
-
 #pragma mark - App Life Cycle
 
 - (void)subscribeForAppDidBecomeActiveNotifications {
@@ -887,11 +853,7 @@ static FIRApp *sDefaultApp;
 
 - (void)logCoreTelemetryIfEnabled {
   if ([self isDataCollectionDefaultEnabled]) {
-    [self.heartbeatLogger log];
-    // TODO(ncooke3): Remove below code when CoreDiagnostics is removed.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-      [FIRCoreDiagnosticsConnector logCoreTelemetryWithOptions:[self options]];
-    });
+    [FIRCoreDiagnosticsConnector logCoreTelemetryWithOptions:_options];
   }
 }
 

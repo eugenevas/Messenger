@@ -16,8 +16,8 @@
 
 #import <Foundation/Foundation.h>
 
-#import "FirebaseAuth/Interop/FIRAuthInterop.h"
-#import "FirebaseCore/Extension/FirebaseCoreInternal.h"
+#import "FirebaseCore/Sources/Private/FirebaseCoreInternal.h"
+#import "Interop/Auth/Public/FIRAuthInterop.h"
 
 #import "FirebaseDatabase/Sources/Api/FIRDatabaseComponent.h"
 #import "FirebaseDatabase/Sources/Api/Private/FIRDatabaseQuery_Private.h"
@@ -32,14 +32,12 @@
 
 + (FIRDatabase *)database {
     if (![FIRApp isDefaultAppConfigured]) {
-        [NSException
-             raise:@"FIRAppNotConfigured"
-            format:@"The default FirebaseApp instance must be "
-                   @"configured before the default Database instance "
-                   @"can be initialized. One way to ensure this is to "
-                   @"call `FirebaseApp.configure()` in the App Delegate's "
-                   @"`application(_:didFinishLaunchingWithOptions:)` "
-                   @"(or the `@main` struct's initializer in SwiftUI)."];
+        [NSException raise:@"FIRAppNotConfigured"
+                    format:@"Failed to get default Firebase Database instance. "
+                           @"Must call `[FIRApp "
+                           @"configure]` (`FirebaseApp.configure()` in Swift) "
+                           @"before using "
+                           @"Firebase Database."];
     }
     return [FIRDatabase databaseForApp:[FIRApp defaultApp]];
 }
@@ -97,6 +95,7 @@
 }
 
 + (NSString *)buildVersion {
+    // TODO: Restore git hash when build moves back to git
     return [NSString stringWithFormat:@"%@_%s", FIRFirebaseVersion(), __DATE__];
 }
 
@@ -154,15 +153,13 @@
     }
     FParsedUrl *parsedUrl = [FUtilities parseUrl:databaseUrl];
     [FValidation validateFrom:@"referenceFromURL:" validURL:parsedUrl];
-
-    BOOL isInvalidHost =
-        !parsedUrl.repoInfo.isCustomHost &&
-        ![_repoInfo.host isEqualToString:parsedUrl.repoInfo.host];
-    if (isInvalidHost) {
-        [NSException raise:@"InvalidDatabaseURL"
-                    format:@"Invalid URL (%@) passed to getReference(). URL "
-                           @"was expected to match configured Database URL: %@",
-                           databaseUrl, _repoInfo.host];
+    if (![parsedUrl.repoInfo.host isEqualToString:_repoInfo.host]) {
+        [NSException
+             raise:@"InvalidDatabaseURL"
+            format:
+                @"Invalid URL (%@) passed to getReference(). URL was expected "
+                 "to match configured Database URL: %@",
+                databaseUrl, [self reference].URL];
     }
     return [[FIRDatabaseReference alloc] initWithRepo:self.repo
                                                  path:parsedUrl.path];
@@ -174,25 +171,6 @@
     dispatch_async([FIRDatabaseQuery sharedQueue], ^{
       [self.repo purgeOutstandingWrites];
     });
-}
-
-- (void)useEmulatorWithHost:(NSString *)host port:(NSInteger)port {
-    if (host.length == 0) {
-        [NSException raise:NSInvalidArgumentException
-                    format:@"Cannot connect to nil or empty host."];
-    }
-    if (self.repo != nil) {
-        [NSException
-             raise:NSInternalInconsistencyException
-            format:@"Cannot connect to emulator after database initialization. "
-                   @"Call useEmulator(host:port:) before creating a database "
-                   @"reference or trying to load data."];
-    }
-    NSString *fullHost =
-        [NSString stringWithFormat:@"%@:%li", host, (long)port];
-    FRepoInfo *emulatorInfo = [[FRepoInfo alloc] initWithInfo:self.repoInfo
-                                                 emulatedHost:fullHost];
-    self->_repoInfo = emulatorInfo;
 }
 
 - (void)goOnline {
@@ -249,12 +227,10 @@
 }
 
 - (void)ensureRepo {
-    @synchronized(self) {
-        if (self.repo == nil) {
-            self.repo = [FRepoManager createRepo:self.repoInfo
-                                          config:self.config
-                                        database:self];
-        }
+    if (self.repo == nil) {
+        self.repo = [FRepoManager createRepo:self.repoInfo
+                                      config:self.config
+                                    database:self];
     }
 }
 
